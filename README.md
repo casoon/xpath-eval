@@ -61,7 +61,7 @@ supply a `variables`/`namespaces` lookup hook — see their doc comments.
 
 ```toml
 [dependencies]
-xpath-eval = "0.1"
+xpath-eval = "0.2"
 ```
 
 ## License

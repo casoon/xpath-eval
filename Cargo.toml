@@ -1,6 +1,6 @@
 [package]
 name = "xpath-eval"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "A pure-Rust XPath 1.0 expression evaluator, generic over the document model"
 license = "MIT"

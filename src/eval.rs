@@ -4,7 +4,7 @@
 //! location-path/predicate evaluation (§2.2-§2.4).
 //!
 //! `last()`/`position()`/`count()` are implemented as functions directly
-//! here; the rest of the core function library (§4, `id()` excluded) is
+//! here; the rest of the core function library (§4, including `id()`) is
 //! implemented in `functions.rs` and dispatched to from
 //! `evaluate_function` below (Phase 05).
 
@@ -23,9 +23,8 @@ pub type VariableLookup<'a, N> = dyn Fn(&QName) -> Option<Value<N>> + 'a;
 
 /// A namespace-prefix resolution hook: given a name test's raw prefix
 /// string, returns the namespace URI it's bound to, if any. `None` means
-/// the prefix is unresolvable via this hook (distinct from the hook being
-/// absent altogether, but both fall back the same way — see
-/// `matches_node_test`'s doc comment).
+/// the prefix is unresolvable via this hook — a prefixed name test then
+/// never matches (see `resolve_prefix`/`matches_node_test`).
 pub type NamespaceLookup<'a> = dyn Fn(&str) -> Option<String> + 'a;
 
 /// The context an `Expr` is evaluated against (§2.2/§2.4): the context node,
@@ -40,9 +39,8 @@ pub type NamespaceLookup<'a> = dyn Fn(&str) -> Option<String> + 'a;
 /// clearly-erroring path rather than a panic or a silently-wrong default.
 ///
 /// `None` in `namespaces` means "no namespace bindings are declared" —
-/// prefixed name tests then fall back to comparing the raw prefix string
-/// directly against `namespace_uri` (see `matches_node_test`'s doc comment
-/// for the full rationale).
+/// prefixed name tests then never match any node (see `resolve_prefix`'s
+/// doc comment for the full rationale).
 ///
 /// `'ctx` is the node/document borrow lifetime (`N: Node<'ctx>`); `'hook` is
 /// an independent lifetime for the `variables`/`namespaces` hook references.
@@ -103,11 +101,10 @@ impl<'ctx, 'hook, N: Node<'ctx>> EvaluationContext<'ctx, 'hook, N> {
 /// is evaluated against a concrete context.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EvalError {
-    /// `PrimaryExpr::Function` named something other than one of the 26
+    /// `PrimaryExpr::Function` named something other than one of the 27
     /// implemented core-library functions (`last`/`position`/`count`,
-    /// Phase 04, plus the 23 more in `functions.rs`, Phase 05) — including
-    /// `id()`, which is deliberately out of scope (see `functions.rs`'s
-    /// module doc comment).
+    /// Phase 04, plus the 24 more in `functions.rs`, Phase 05 — including
+    /// `id()`, see its doc comment there).
     UnknownFunction(QName),
     /// `PrimaryExpr::Variable` has no binding via the context's lookup hook.
     UnboundVariable(QName),
@@ -337,7 +334,7 @@ fn bool_to_number(b: bool) -> f64 {
 
 // ---- Location paths / steps / predicates (§2.2-§2.4) -------------------
 
-fn root_of<'a, N: Node<'a>>(n: N) -> N {
+pub(crate) fn root_of<'a, N: Node<'a>>(n: N) -> N {
     let mut cur = n;
     while let Some(p) = cur.parent() {
         cur = p;
@@ -345,7 +342,7 @@ fn root_of<'a, N: Node<'a>>(n: N) -> N {
     cur
 }
 
-fn sort_dedup<'a, N: Node<'a>>(nodes: &mut Vec<N>) {
+pub(crate) fn sort_dedup<'a, N: Node<'a>>(nodes: &mut Vec<N>) {
     nodes.sort_by(|a, b| a.document_order(*b));
     nodes.dedup();
 }
@@ -381,46 +378,27 @@ fn principal_node_kind(axis: Axis) -> NodeKind {
     }
 }
 
-/// Outcome of resolving a `NodeTest` prefix string via `resolve_prefix`.
-enum PrefixResolution {
-    /// A value to compare against `ExpandedName::namespace_uri` — either a
-    /// hook-resolved URI, or (no hook present at all) the Phase-04
-    /// fallback of treating the raw prefix string itself as that value.
-    Value(String),
-    /// A resolver hook *is* present but doesn't know this prefix. Per spec
-    /// an unbound namespace prefix is invalid; conservatively, that can
-    /// never match a real node's namespace URI — unlike the no-hook case,
-    /// this must not fall back to comparing the raw prefix string, since
-    /// that string was never claimed to be a URI.
-    Unbound,
-}
-
-/// Resolves `prefix` to a namespace URI via `namespaces` (Phase 04a). See
-/// `PrefixResolution` for the no-hook vs. hook-present-but-unresolvable
-/// distinction.
+/// Resolves `prefix` to a namespace URI via `namespaces` (Phase 04a).
+/// `None` means the prefix cannot be resolved to any URI — either there is
+/// no resolver hook at all, or one is present but doesn't know this
+/// prefix. Both cases are treated identically: per spec an unbound
+/// namespace prefix is invalid, and a `NodeTest` carrying it can never
+/// match a real node's namespace URI. (Earlier, a missing hook fell back
+/// to comparing the raw prefix string itself against `namespace_uri` —
+/// correct only by coincidence, when a caller happened to use the URI
+/// itself as the "prefix"; that fallback has been removed as a footgun for
+/// callers who don't supply a resolver.)
 fn resolve_prefix<'hook>(
     prefix: &str,
     namespaces: Option<&NamespaceLookup<'hook>>,
-) -> PrefixResolution {
-    match namespaces {
-        None => PrefixResolution::Value(prefix.to_string()),
-        Some(lookup) => match lookup(prefix) {
-            Some(uri) => PrefixResolution::Value(uri),
-            None => PrefixResolution::Unbound,
-        },
-    }
+) -> Option<String> {
+    namespaces.and_then(|lookup| lookup(prefix))
 }
 
-/// Note on namespace resolution: `NodeTest::QName`/`NamespaceWildcard` carry
-/// the expression's raw `prefix` string. Before Phase 04a, this compared
-/// that raw string directly against `ExpandedName::namespace_uri` — correct
-/// only by coincidence, when a caller happened to use the URI itself as the
-/// prefix. `namespaces` (threaded down from `EvaluationContext`, see
-/// `resolve_prefix`) now resolves the prefix to its declared URI first,
-/// when a resolver hook is present and knows the prefix; with no hook at
-/// all, this falls back to the old raw-string comparison; with a hook
-/// present that doesn't know the prefix, no node can match (see
-/// `PrefixResolution::Unbound`).
+/// `NodeTest::QName`/`NamespaceWildcard` carry the expression's raw
+/// `prefix` string, which only ever matches through a real, hook-resolved
+/// namespace URI (see `resolve_prefix`) — never through the prefix string
+/// itself.
 fn matches_node_test<'ctx, 'hook, N: Node<'ctx>>(
     test: &NodeTest,
     axis: Axis,
@@ -440,9 +418,8 @@ fn matches_node_test<'ctx, 'hook, N: Node<'ctx>>(
         }
         NodeTest::AnyName => n.kind() == principal_node_kind(axis) && n.expanded_name().is_some(),
         NodeTest::NamespaceWildcard(prefix) => {
-            let uri = match resolve_prefix(prefix, namespaces) {
-                PrefixResolution::Unbound => return false,
-                PrefixResolution::Value(uri) => uri,
+            let Some(uri) = resolve_prefix(prefix, namespaces) else {
+                return false;
             };
             n.kind() == principal_node_kind(axis)
                 && n.expanded_name()
@@ -452,8 +429,8 @@ fn matches_node_test<'ctx, 'hook, N: Node<'ctx>>(
             let uri = match &qname.prefix {
                 None => None,
                 Some(p) => match resolve_prefix(p, namespaces) {
-                    PrefixResolution::Unbound => return false,
-                    PrefixResolution::Value(uri) => Some(uri),
+                    Some(uri) => Some(uri),
+                    None => return false,
                 },
             };
             n.kind() == principal_node_kind(axis)
@@ -1143,8 +1120,8 @@ mod tests {
     #[test]
     fn qname_test_does_not_match_when_hook_does_not_know_the_prefix() {
         // The hook is present but returns `None` for "p" — that prefix is
-        // unbound, so no node can match (`PrefixResolution::Unbound`),
-        // regardless of what the raw prefix string happens to look like.
+        // unbound, so no node can match, regardless of what the raw prefix
+        // string happens to look like.
         let lookup = |_: &str| -> Option<String> { None };
         assert!(!matches_node_test(
             &qname_test(),
@@ -1157,8 +1134,7 @@ mod tests {
     #[test]
     fn qname_test_does_not_match_when_hook_present_but_unresolvable_even_if_raw_prefix_equals_the_uri()
      {
-        // Regression for the todo.md item: with a resolver hook present,
-        // an unresolvable prefix must NOT fall back to comparing the raw
+        // An unresolvable prefix must NOT fall back to comparing the raw
         // prefix string against the namespace URI — not even when that
         // raw string happens to equal the real URI.
         let mut node = ns_node();
@@ -1174,9 +1150,8 @@ mod tests {
 
     #[test]
     fn qname_test_does_not_match_with_no_hook_at_all() {
-        // No hook at all (`namespaces: None`) — same fallback path as
-        // above: raw prefix string "p" compared directly against the real
-        // URI, not equal, so this must NOT match.
+        // No hook at all (`namespaces: None`) — a prefixed name test can
+        // never match any node.
         assert!(!matches_node_test(
             &qname_test(),
             Axis::Child,
@@ -1186,15 +1161,15 @@ mod tests {
     }
 
     #[test]
-    fn qname_test_matches_with_no_hook_at_all_when_raw_prefix_equals_the_uri() {
-        // No hook at all — Phase-04 fallback: the raw prefix string itself
-        // is compared directly against the namespace URI, so this DOES
-        // match when a caller happens to use the URI as the "prefix".
-        // This is the fallback path `qname_test_does_not_match_when_hook_present_but_unresolvable_*`
-        // above must NOT take once a hook is present.
+    fn qname_test_does_not_match_with_no_hook_at_all_even_if_raw_prefix_equals_the_uri() {
+        // Regression: earlier, no hook at all fell back to comparing the
+        // raw prefix string itself against the namespace URI, so this
+        // *would* have matched. That fallback is gone — no hook now means
+        // no match, symmetric with the hook-present-but-unresolvable case
+        // above.
         let mut node = ns_node();
         node.namespace_uri = Some("p");
-        assert!(matches_node_test(&qname_test(), Axis::Child, node, None));
+        assert!(!matches_node_test(&qname_test(), Axis::Child, node, None));
     }
 
     #[test]

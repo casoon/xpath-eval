@@ -76,6 +76,20 @@ pub trait Node<'a>: Copy + Eq + 'a {
     /// needs to be *some* stable order.) Must be consistent with
     /// `children()`/`attributes()`/`namespaces()`.
     fn document_order(self, other: Self) -> Ordering;
+
+    /// Whether this attribute node is of type `ID` (§5.3, §4.1's `id()`) —
+    /// i.e. whether XPath's `id()` function should be able to find this
+    /// attribute's owner element by this attribute's string-value. The
+    /// XPath 1.0 data model derives this from a DTD or schema; most callers
+    /// have no such information, so the default is `false` everywhere
+    /// (`id()` then always returns an empty node-set, never an error — the
+    /// function itself is always implemented). Callers that do have ID
+    /// information (DTD validation, `xml:id`, a known convention) should
+    /// override this on their `Attribute`-kind nodes. Meaningless (and
+    /// never called by this crate) on non-`Attribute` nodes.
+    fn is_id_attribute(self) -> bool {
+        false
+    }
 }
 
 /// An XPath 1.0 document: gives access to the root node.

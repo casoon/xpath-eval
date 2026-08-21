@@ -11,9 +11,8 @@ the data model view over the caller's tree, and evaluation).
 ## Status
 
 Implemented: the lexer/parser, the full location-path/predicate evaluation
-core (§2), and 25 of the 26 XPath 1.0 Core Function Library functions
-(§4) — every one except `id()`. 142 tests pass, `clippy` and `fmt` are
-clean.
+core (§2), and the complete XPath 1.0 Core Function Library (§4, all 27
+functions, including `id()`). 147 tests pass, `clippy` and `fmt` are clean.
 
 ## Example
 
@@ -39,15 +38,16 @@ supply a `variables`/`namespaces` lookup hook — see their doc comments.
 
 ## Scope and known limitations
 
-- **`id()` is not implemented.** The XPath 1.0 data model requires knowing
-  which attributes are DTD-declared `ID`-typed, which the `Node`/`Document`
-  traits have no way to express; calling `id()` returns
-  `EvalError::UnknownFunction`. Everything else in §4 is implemented.
-- **Namespace-prefix resolution is opt-in.** Without a `namespaces` hook on
-  `EvaluationContext`, a prefixed name test (`p:foo`) falls back to
-  comparing the expression's raw prefix string directly against a node's
-  namespace URI — only correct by coincidence. Supply a real resolver hook
-  for spec-correct prefix→URI resolution.
+- **`id()` needs `Node::is_id_attribute()` to be overridden to do anything
+  useful.** The XPath 1.0 data model derives ID-ness from a DTD or schema;
+  most `Node` implementations have no such information, so the trait's
+  default (`false` everywhere) means `id()` is a real function that simply
+  never matches. Override `is_id_attribute()` on your `Attribute`-kind
+  nodes if you know which attributes are IDs.
+- **Namespace-prefix resolution requires a `namespaces` hook.** Without one
+  on `EvaluationContext`, a prefixed name test (`p:foo`) never matches any
+  node — it does not fall back to guessing. Supply a resolver hook for
+  spec-correct prefix→URI resolution.
 - **`following`/`preceding` are full document-order axes** (§2.3): each
   walk touches the potentially-large before/after portion of the whole
   tree, not just nearby nodes. Fine for typical documents; be aware of the

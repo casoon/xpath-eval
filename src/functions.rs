@@ -1,10 +1,12 @@
-//! The remaining 23 functions of the XPath 1.0 Core Function Library (§4.1
-//! minus `id()`, §4.2, §4.3, §4.4) — see `plan/05-function-library.md` for
-//! the verbatim spec text and worked examples each implementation below is
-//! checked against. `last`/`position`/`count` (§4.1) stay in `eval.rs`
-//! (Phase 04); `id()` (§4.1) is deliberately out of scope (see the plan's
-//! "Bewusst nicht in dieser Phase" section) — the current `Document`/`Node`
-//! trait has no way to know which attributes are DTD-declared `ID`-typed.
+//! The remaining 24 functions of the XPath 1.0 Core Function Library (§4.1,
+//! §4.2, §4.3, §4.4) — see `plan/05-function-library.md` for the verbatim
+//! spec text and worked examples each implementation below is checked
+//! against. `last`/`position`/`count` (§4.1) stay in `eval.rs` (Phase 04).
+//!
+//! `id()` relies on `Node::is_id_attribute()`, which defaults to `false`
+//! everywhere — the XPath 1.0 data model derives ID-ness from a DTD/schema,
+//! which most callers don't have. With no caller override, `id()` is still
+//! a real, always-implemented function; it just never matches anything.
 
 use crate::ast::{Expr, FunctionCall};
 use crate::document::Node;
@@ -101,6 +103,28 @@ fn string_arg_or_context<'ctx, 'hook, N: Node<'ctx>>(
 /// Rust's `char::is_whitespace()`, per `normalize-space()`'s spec text.
 fn is_xml_whitespace(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\r' | '\n')
+}
+
+/// §4.1, `id()`'s "whitespace-separated list of tokens" rule (referencing
+/// XML's `S` production, same as `is_xml_whitespace` above).
+fn whitespace_tokens(s: &str) -> Vec<String> {
+    s.split(is_xml_whitespace)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// §4.1, `id()` — verbatim: "the result is a node-set containing the
+/// elements in the same document as the context node that have a unique ID
+/// equal to any of the tokens in the list". `root` must be that document's
+/// root (see `id()`'s call site); "unique ID" is delegated entirely to
+/// `Node::is_id_attribute()` — the first matching element in document order
+/// is returned, since a well-formed document has at most one.
+fn find_element_by_id<'a, N: Node<'a>>(root: N, id: &str) -> Option<N> {
+    crate::axes::descendant_or_self(root).find(|&n| {
+        n.attributes()
+            .any(|a| a.is_id_attribute() && a.string_value() == id)
+    })
 }
 
 /// §4.4, `round()`'s "closest to positive infinity" tie-break and negative-
@@ -273,9 +297,8 @@ fn qname_string<'a, N: Node<'a>>(node: N) -> String {
 }
 
 /// Dispatches every core-library function *other* than `last`/`position`/
-/// `count` (handled in `eval.rs`) and `id` (out of scope, see the module
-/// doc comment). Any name that reaches here without matching one of the 23
-/// implemented functions — including `id` itself — falls through to
+/// `count` (handled in `eval.rs`). Any name that reaches here without
+/// matching one of the 24 implemented functions falls through to
 /// `EvalError::UnknownFunction`, exactly like an unrecognized name would
 /// before this phase.
 pub(crate) fn dispatch<'ctx, 'hook, N: Node<'ctx>>(
@@ -287,7 +310,25 @@ pub(crate) fn dispatch<'ctx, 'hook, N: Node<'ctx>>(
     }
     let args = &call.args;
     match call.name.local.as_str() {
-        // ---- §4.1 node-set functions (id() excluded) --------------------
+        // ---- §4.1 node-set functions -------------------------------------
+        "id" => {
+            check_arity("id", args, 1)?;
+            let arg_val = evaluate(&args[0], ctx)?;
+            let tokens: Vec<String> = match &arg_val {
+                Value::NodeSet(nodes) => nodes
+                    .iter()
+                    .flat_map(|n| whitespace_tokens(&n.string_value()))
+                    .collect(),
+                other => whitespace_tokens(&other.to_xpath_string()),
+            };
+            let root = crate::eval::root_of(ctx.node);
+            let mut result: Vec<N> = tokens
+                .iter()
+                .filter_map(|id| find_element_by_id(root, id))
+                .collect();
+            crate::eval::sort_dedup(&mut result);
+            Ok(Value::NodeSet(result))
+        }
         "local-name" => {
             check_arity_range("local-name", args, 0, 1)?;
             let node = first_node_arg(args, ctx)?;
@@ -1414,14 +1455,231 @@ mod tests {
         ));
     }
 
-    // ---- id() stays unimplemented (deliberately out of scope) ---------------
+    // ---- §4.1 id() ------------------------------------------------------
 
     #[test]
-    fn id_is_still_unknown_function() {
+    fn id_with_wrong_arity_is_an_error() {
         let f = build();
         assert!(matches!(
-            eval_str("id('x')", root(&f)),
-            Err(EvalError::UnknownFunction(_))
+            eval_str("id()", root(&f)),
+            Err(EvalError::ArgumentCount {
+                function: "id",
+                expected: 1,
+                got: 0
+            })
         ));
+    }
+
+    /// A minimal parent-linked tree, purpose-built to test `id()` — the
+    /// shared `document::fixture` tree never overrides `is_id_attribute()`
+    /// (it's `false` everywhere by the trait default), so it can't exercise
+    /// a real match. A standalone `Node` impl is used instead, following
+    /// the same precedent as `QNameArena`/`LangArena`.
+    #[derive(Debug)]
+    enum IdEntry {
+        Root {
+            children: Vec<usize>,
+        },
+        Element {
+            #[allow(dead_code)]
+            parent: usize,
+            attributes: Vec<usize>,
+        },
+        Attribute {
+            owner: usize,
+            local_name: &'static str,
+            value: &'static str,
+            is_id: bool,
+        },
+    }
+
+    #[derive(Debug)]
+    struct IdArena(Vec<IdEntry>);
+
+    #[derive(Clone, Copy, Debug)]
+    struct IdNode<'a> {
+        arena: &'a IdArena,
+        idx: usize,
+    }
+
+    impl<'a> PartialEq for IdNode<'a> {
+        fn eq(&self, other: &Self) -> bool {
+            std::ptr::eq(self.arena, other.arena) && self.idx == other.idx
+        }
+    }
+    impl<'a> Eq for IdNode<'a> {}
+
+    impl<'a> Node<'a> for IdNode<'a> {
+        fn kind(self) -> NodeKind {
+            match &self.arena.0[self.idx] {
+                IdEntry::Root { .. } => NodeKind::Root,
+                IdEntry::Element { .. } => NodeKind::Element,
+                IdEntry::Attribute { .. } => NodeKind::Attribute,
+            }
+        }
+        fn parent(self) -> Option<Self> {
+            match &self.arena.0[self.idx] {
+                IdEntry::Root { .. } => None,
+                IdEntry::Element { parent, .. } => Some(IdNode {
+                    arena: self.arena,
+                    idx: *parent,
+                }),
+                IdEntry::Attribute { owner, .. } => Some(IdNode {
+                    arena: self.arena,
+                    idx: *owner,
+                }),
+            }
+        }
+        fn children(self) -> impl Iterator<Item = Self> + 'a {
+            let arena = self.arena;
+            let indices = match &arena.0[self.idx] {
+                IdEntry::Root { children } => children.clone(),
+                _ => Vec::new(),
+            };
+            indices.into_iter().map(move |i| IdNode { arena, idx: i })
+        }
+        fn attributes(self) -> impl Iterator<Item = Self> + 'a {
+            let arena = self.arena;
+            let indices = match &arena.0[self.idx] {
+                IdEntry::Element { attributes, .. } => attributes.clone(),
+                _ => Vec::new(),
+            };
+            indices.into_iter().map(move |i| IdNode { arena, idx: i })
+        }
+        fn namespaces(self) -> impl Iterator<Item = Self> + 'a {
+            std::iter::empty()
+        }
+        fn expanded_name(self) -> Option<ExpandedName> {
+            match &self.arena.0[self.idx] {
+                IdEntry::Root { .. } => None,
+                IdEntry::Element { .. } => Some(ExpandedName {
+                    namespace_uri: None,
+                    local_name: "el".to_string(),
+                }),
+                IdEntry::Attribute { local_name, .. } => Some(ExpandedName {
+                    namespace_uri: None,
+                    local_name: local_name.to_string(),
+                }),
+            }
+        }
+        fn string_value(self) -> String {
+            match &self.arena.0[self.idx] {
+                IdEntry::Attribute { value, .. } => value.to_string(),
+                _ => String::new(),
+            }
+        }
+        fn document_order(self, other: Self) -> std::cmp::Ordering {
+            self.idx.cmp(&other.idx)
+        }
+        fn is_id_attribute(self) -> bool {
+            matches!(
+                &self.arena.0[self.idx],
+                IdEntry::Attribute { is_id: true, .. }
+            )
+        }
+    }
+
+    /// `root(0) -> el1(1)[id="a", is_id] -> el2(3)[id="b", is_id] ->
+    /// el3(5)[id="a", NOT is_id]` — `el3` is a same-named-attribute trap:
+    /// its `id` attribute has the same local name and a colliding value as
+    /// `el1`'s, but isn't marked `is_id_attribute`, so it must never match.
+    fn id_arena() -> IdArena {
+        IdArena(vec![
+            IdEntry::Root {
+                children: vec![1, 3, 5],
+            },
+            IdEntry::Element {
+                parent: 0,
+                attributes: vec![2],
+            },
+            IdEntry::Attribute {
+                owner: 1,
+                local_name: "id",
+                value: "a",
+                is_id: true,
+            },
+            IdEntry::Element {
+                parent: 0,
+                attributes: vec![4],
+            },
+            IdEntry::Attribute {
+                owner: 3,
+                local_name: "id",
+                value: "b",
+                is_id: true,
+            },
+            IdEntry::Element {
+                parent: 0,
+                attributes: vec![6],
+            },
+            IdEntry::Attribute {
+                owner: 5,
+                local_name: "id",
+                value: "a",
+                is_id: false,
+            },
+        ])
+    }
+
+    fn id_node(arena: &IdArena, idx: usize) -> IdNode<'_> {
+        IdNode { arena, idx }
+    }
+
+    #[test]
+    fn id_finds_the_element_with_the_matching_id_attribute() {
+        let arena = id_arena();
+        let ctx = EvaluationContext::new(id_node(&arena, 0));
+        let expr = crate::parse("id('b')").unwrap();
+        assert_eq!(
+            crate::evaluate(&expr, &ctx),
+            Ok(Value::NodeSet(vec![id_node(&arena, 3)]))
+        );
+    }
+
+    #[test]
+    fn id_does_not_match_a_same_named_attribute_that_is_not_marked_as_the_id() {
+        let arena = id_arena();
+        let ctx = EvaluationContext::new(id_node(&arena, 0));
+        let expr = crate::parse("id('a')").unwrap();
+        // el3 (idx 5) has an "id"-named attribute with the same value "a",
+        // but `is_id_attribute() == false` — only el1 (idx 1) must match.
+        assert_eq!(
+            crate::evaluate(&expr, &ctx),
+            Ok(Value::NodeSet(vec![id_node(&arena, 1)]))
+        );
+    }
+
+    #[test]
+    fn id_with_whitespace_separated_tokens_returns_matches_in_document_order() {
+        let arena = id_arena();
+        let ctx = EvaluationContext::new(id_node(&arena, 0));
+        // Token order is "b a" (reversed), but the result must come back
+        // in document order: el1 (idx 1) before el2 (idx 3).
+        let expr = crate::parse("id('b a')").unwrap();
+        assert_eq!(
+            crate::evaluate(&expr, &ctx),
+            Ok(Value::NodeSet(vec![id_node(&arena, 1), id_node(&arena, 3)]))
+        );
+    }
+
+    #[test]
+    fn id_returns_an_empty_node_set_when_nothing_matches() {
+        let arena = id_arena();
+        let ctx = EvaluationContext::new(id_node(&arena, 0));
+        let expr = crate::parse("id('zzz')").unwrap();
+        assert_eq!(crate::evaluate(&expr, &ctx), Ok(Value::NodeSet(Vec::new())));
+    }
+
+    #[test]
+    fn id_accepts_a_node_set_argument_and_uses_each_nodes_string_value() {
+        let arena = id_arena();
+        // Context is el2 (idx 3) itself, so `@id` resolves to its own
+        // "id"="b" attribute; `id(@id)` must then find el2 again.
+        let ctx = EvaluationContext::new(id_node(&arena, 3));
+        let expr = crate::parse("id(@id)").unwrap();
+        assert_eq!(
+            crate::evaluate(&expr, &ctx),
+            Ok(Value::NodeSet(vec![id_node(&arena, 3)]))
+        );
     }
 }

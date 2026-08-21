@@ -8,23 +8,6 @@ specific document type. Callers provide their own parsed document via a
 trait; this crate only implements the XPath side (expression parsing,
 the data model view over the caller's tree, and evaluation).
 
-## Why this exists
-
-This crate stands on its own: XPath 1.0 evaluation is a distinct,
-independently useful capability, not inherently coupled to Schematron, HTML,
-or any other single consumer. It was split out as its own crate rather than
-folded into another project specifically so it stays usable outside of
-whatever prompted its creation.
-
-That said, its origin is concrete: [`schematron-engine`](https://github.com/casoon/schematron-engine)
-needs it to evaluate `test="..."` XPath expressions from Schematron rules,
-and [`html-conform`](https://github.com/casoon/html-conform) is the first
-real-world application that needs `xpath-eval` and `schematron-engine`
-*together* — as a replacement for `xmloxide`'s bundled XPath/Schematron
-support in that project's assertion layer (Schicht 3). See `html-conform`'s
-`plan/DECISIONS.md` for the full context. That combination is one use case
-among potentially others, not this crate's reason for existing.
-
 ## Status
 
 Implemented: the lexer/parser, the full location-path/predicate evaluation

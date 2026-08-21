@@ -74,9 +74,12 @@ supply a `variables`/`namespaces` lookup hook — see their doc comments.
   see the trait's doc comments for the exact ordering rules (element before
   its namespace nodes before its attribute nodes before its children).
 
-## Package name
+## Installation
 
-Intended crates.io name: `xpath-eval`. Not yet published.
+```toml
+[dependencies]
+xpath-eval = "0.1"
+```
 
 ## License
 

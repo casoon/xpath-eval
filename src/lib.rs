@@ -1,10 +1,4 @@
-//! A pure-Rust XPath 1.0 expression parser and evaluator, generic over the
-//! document model.
-//!
-//! Phase 02: lexer + recursive-descent parser producing a structured AST.
-//! Phase 03: the generic document/node data model and the 13 XPath axes.
-//! Phase 04: the value model, type conversions, operators, and full
-//! location-path/predicate evaluation — see `plan/` for the roadmap.
+#![doc = include_str!("../README.md")]
 
 mod ast;
 mod axes;

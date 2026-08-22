@@ -241,15 +241,22 @@ fn rel_result(op: RelationalOp, l: f64, r: f64) -> bool {
     }
 }
 
+/// Whether any pair of nodes from `a` and `b` matches `f` — the shared
+/// node-set/node-set comparison of `compare_equality` and
+/// `compare_relational`.
+fn any_node_pair<'a, N: Node<'a>>(a: &[N], b: &[N], f: impl Fn(N, N) -> bool) -> bool {
+    a.iter()
+        .copied()
+        .any(|na| b.iter().copied().any(|nb| f(na, nb)))
+}
+
 /// §3.4, node-set comparison rules for `=`/`!=` (all four cases quoted
 /// verbatim in the plan), falling back to the "no node-set operand" rule
 /// (boolean, else number, else string) otherwise.
 fn compare_equality<'a, N: Node<'a>>(lhs: &Value<N>, op: EqualityOp, rhs: &Value<N>) -> bool {
     match (lhs, rhs) {
-        (Value::NodeSet(a), Value::NodeSet(b)) => a.iter().copied().any(|na| {
-            b.iter()
-                .copied()
-                .any(|nb| eq_result(op, na.string_value(), nb.string_value()))
+        (Value::NodeSet(a), Value::NodeSet(b)) => any_node_pair(a, b, |na, nb| {
+            eq_result(op, na.string_value(), nb.string_value())
         }),
         (Value::NodeSet(a), Value::Number(n)) | (Value::Number(n), Value::NodeSet(a)) => a
             .iter()
@@ -289,14 +296,12 @@ fn compare_equality<'a, N: Node<'a>>(lhs: &Value<N>, op: EqualityOp, rhs: &Value
 /// comparison.
 fn compare_relational<'a, N: Node<'a>>(lhs: &Value<N>, op: RelationalOp, rhs: &Value<N>) -> bool {
     match (lhs, rhs) {
-        (Value::NodeSet(a), Value::NodeSet(b)) => a.iter().copied().any(|na| {
-            b.iter().copied().any(|nb| {
-                rel_result(
-                    op,
-                    string_to_number(&na.string_value()),
-                    string_to_number(&nb.string_value()),
-                )
-            })
+        (Value::NodeSet(a), Value::NodeSet(b)) => any_node_pair(a, b, |na, nb| {
+            rel_result(
+                op,
+                string_to_number(&na.string_value()),
+                string_to_number(&nb.string_value()),
+            )
         }),
         (Value::NodeSet(a), Value::Number(n)) => a
             .iter()
@@ -333,14 +338,6 @@ fn bool_to_number(b: bool) -> f64 {
 }
 
 // ---- Location paths / steps / predicates (§2.2-§2.4) -------------------
-
-pub(crate) fn root_of<'a, N: Node<'a>>(n: N) -> N {
-    let mut cur = n;
-    while let Some(p) = cur.parent() {
-        cur = p;
-    }
-    cur
-}
 
 pub(crate) fn sort_dedup<'a, N: Node<'a>>(nodes: &mut Vec<N>) {
     nodes.sort_by(|a, b| a.document_order(*b));
@@ -522,7 +519,10 @@ fn evaluate_location_path<'ctx, 'hook, N: Node<'ctx>>(
     ctx: &EvaluationContext<'ctx, 'hook, N>,
 ) -> Result<Vec<N>, EvalError> {
     let start = if loc.is_absolute {
-        start.first().map(|&n| vec![root_of(n)]).unwrap_or_default()
+        start
+            .first()
+            .map(|&n| vec![axes::root_of(n)])
+            .unwrap_or_default()
     } else {
         start
     };
@@ -597,7 +597,11 @@ fn evaluate_primary<'ctx, 'hook, N: Node<'ctx>>(
     }
 }
 
-fn check_arity(function: &'static str, args: &[Expr], expected: usize) -> Result<(), EvalError> {
+pub(crate) fn check_arity(
+    function: &'static str,
+    args: &[Expr],
+    expected: usize,
+) -> Result<(), EvalError> {
     if args.len() == expected {
         Ok(())
     } else {

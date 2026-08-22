@@ -49,7 +49,7 @@ fn descendant_or_self_vec<'a, N: Node<'a>>(n: N) -> Vec<N> {
 }
 
 /// The root of the document `n` belongs to (walks `parent()` to the top).
-fn root_of<'a, N: Node<'a>>(n: N) -> N {
+pub(crate) fn root_of<'a, N: Node<'a>>(n: N) -> N {
     let mut cur = n;
     while let Some(p) = cur.parent() {
         cur = p;
@@ -98,21 +98,30 @@ pub fn ancestor_or_self<'a, N: Node<'a>>(n: N) -> impl Iterator<Item = N> + 'a {
     out.into_iter()
 }
 
+/// The parent's children of `n`, or empty if `n` is an attribute/namespace
+/// node or has no parent — the shared guard for `following-sibling`/
+/// `preceding-sibling`.
+fn siblings_of<'a, N: Node<'a>>(n: N) -> Vec<N> {
+    if is_attribute_or_namespace(n.kind()) {
+        return Vec::new();
+    }
+    match n.parent() {
+        Some(parent) => parent.children().collect(),
+        None => Vec::new(),
+    }
+}
+
 /// `following-sibling` axis: "contains all the following siblings of the
 /// context node; if the context node is an attribute node or namespace
 /// node, the following-sibling axis is empty".
 pub fn following_sibling<'a, N: Node<'a>>(n: N) -> impl Iterator<Item = N> + 'a {
     let mut out = Vec::new();
-    if !is_attribute_or_namespace(n.kind())
-        && let Some(parent) = n.parent()
-    {
-        let mut found = false;
-        for c in parent.children() {
-            if found {
-                out.push(c);
-            } else if c == n {
-                found = true;
-            }
+    let mut found = false;
+    for c in siblings_of(n) {
+        if found {
+            out.push(c);
+        } else if c == n {
+            found = true;
         }
     }
     out.into_iter()
@@ -124,29 +133,32 @@ pub fn following_sibling<'a, N: Node<'a>>(n: N) -> impl Iterator<Item = N> + 'a 
 /// nearest-preceding-sibling-first (reverse document order).
 pub fn preceding_sibling<'a, N: Node<'a>>(n: N) -> impl Iterator<Item = N> + 'a {
     let mut out = Vec::new();
-    if !is_attribute_or_namespace(n.kind())
-        && let Some(parent) = n.parent()
-    {
-        for c in parent.children() {
-            if c == n {
-                break;
-            }
-            out.push(c);
+    for c in siblings_of(n) {
+        if c == n {
+            break;
         }
+        out.push(c);
     }
     out.reverse();
     out.into_iter()
+}
+
+/// The full document-order listing of `n`'s document, plus `n`'s index in
+/// it — the shared setup for `following`/`preceding`.
+fn document_order_listing<'a, N: Node<'a>>(n: N) -> (Vec<N>, usize) {
+    let all = descendant_or_self_vec(root_of(n));
+    let idx = all
+        .iter()
+        .position(|x| *x == n)
+        .expect("n must be reachable from its own document root via children()");
+    (all, idx)
 }
 
 /// All nodes after `n`'s entire subtree, in document order. Never contains
 /// attribute/namespace nodes, since the underlying preorder listing is
 /// built purely from `children()`.
 fn following_vec<'a, N: Node<'a>>(n: N) -> Vec<N> {
-    let all = descendant_or_self_vec(root_of(n));
-    let idx = all
-        .iter()
-        .position(|x| *x == n)
-        .expect("n must be reachable from its own document root via children()");
+    let (all, idx) = document_order_listing(n);
     let subtree_len = 1 + descendant_vec(n).len();
     all.into_iter().skip(idx + subtree_len).collect()
 }
@@ -154,11 +166,7 @@ fn following_vec<'a, N: Node<'a>>(n: N) -> Vec<N> {
 /// All nodes before `n` in document order, excluding `n`'s ancestors, in
 /// reverse document order (nearest-first).
 fn preceding_vec<'a, N: Node<'a>>(n: N) -> Vec<N> {
-    let all = descendant_or_self_vec(root_of(n));
-    let idx = all
-        .iter()
-        .position(|x| *x == n)
-        .expect("n must be reachable from its own document root via children()");
+    let (all, idx) = document_order_listing(n);
     let ancestors = ancestor_vec(n);
     let mut out: Vec<N> = all[..idx]
         .iter()
@@ -167,6 +175,14 @@ fn preceding_vec<'a, N: Node<'a>>(n: N) -> Vec<N> {
         .collect();
     out.reverse();
     out
+}
+
+/// The owner element of an attribute/namespace node — used by `following`/
+/// `preceding` to reduce a context node that is itself an attribute or
+/// namespace node to its owner element.
+fn owner_element<'a, N: Node<'a>>(n: N) -> N {
+    n.parent()
+        .expect("attribute/namespace node must have an owner element as parent")
 }
 
 /// `following` axis: "contains all nodes in the same document as the
@@ -182,9 +198,7 @@ fn preceding_vec<'a, N: Node<'a>>(n: N) -> Vec<N> {
 /// following(owner)`.
 pub fn following<'a, N: Node<'a>>(n: N) -> impl Iterator<Item = N> + 'a {
     let out: Vec<N> = if is_attribute_or_namespace(n.kind()) {
-        let owner = n
-            .parent()
-            .expect("attribute/namespace node must have an owner element as parent");
+        let owner = owner_element(n);
         let mut v = descendant_vec(owner);
         v.extend(following_vec(owner));
         v
@@ -206,9 +220,7 @@ pub fn following<'a, N: Node<'a>>(n: N) -> impl Iterator<Item = N> + 'a {
 /// `preceding(attr) == preceding(owner)`.
 pub fn preceding<'a, N: Node<'a>>(n: N) -> impl Iterator<Item = N> + 'a {
     let out: Vec<N> = if is_attribute_or_namespace(n.kind()) {
-        let owner = n
-            .parent()
-            .expect("attribute/namespace node must have an owner element as parent");
+        let owner = owner_element(n);
         preceding_vec(owner)
     } else {
         preceding_vec(n)
@@ -216,26 +228,27 @@ pub fn preceding<'a, N: Node<'a>>(n: N) -> impl Iterator<Item = N> + 'a {
     out.into_iter()
 }
 
+/// Runs `collect` if `n` is an element, otherwise yields nothing — the
+/// shared "axis is empty unless the context node is an element" guard for
+/// `attribute`/`namespace`.
+fn collect_if_element<'a, N: Node<'a>>(n: N, collect: impl FnOnce(N) -> Vec<N>) -> Vec<N> {
+    if n.kind() == NodeKind::Element {
+        collect(n)
+    } else {
+        Vec::new()
+    }
+}
+
 /// `attribute` axis: "contains the attributes of the context node; the
 /// axis will be empty unless the context node is an element".
 pub fn attribute<'a, N: Node<'a>>(n: N) -> impl Iterator<Item = N> + 'a {
-    let out: Vec<N> = if n.kind() == NodeKind::Element {
-        n.attributes().collect()
-    } else {
-        Vec::new()
-    };
-    out.into_iter()
+    collect_if_element(n, |n| n.attributes().collect()).into_iter()
 }
 
 /// `namespace` axis: "contains the namespace nodes of the context node;
 /// the axis will be empty unless the context node is an element".
 pub fn namespace<'a, N: Node<'a>>(n: N) -> impl Iterator<Item = N> + 'a {
-    let out: Vec<N> = if n.kind() == NodeKind::Element {
-        n.namespaces().collect()
-    } else {
-        Vec::new()
-    };
-    out.into_iter()
+    collect_if_element(n, |n| n.namespaces().collect()).into_iter()
 }
 
 /// `self` axis: "contains just the context node itself".

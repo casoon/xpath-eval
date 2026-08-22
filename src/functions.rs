@@ -10,8 +10,8 @@
 
 use crate::ast::{Expr, FunctionCall};
 use crate::document::Node;
-use crate::eval::{EvalError, EvaluationContext, evaluate};
-use crate::value::Value;
+use crate::eval::{EvalError, EvaluationContext, check_arity, evaluate};
+use crate::value::{Value, first_in_document_order};
 
 fn arity_error(function: &'static str, expected: usize, got: usize) -> EvalError {
     EvalError::ArgumentCount {
@@ -21,11 +21,11 @@ fn arity_error(function: &'static str, expected: usize, got: usize) -> EvalError
     }
 }
 
-fn check_arity(function: &'static str, args: &[Expr], expected: usize) -> Result<(), EvalError> {
-    if args.len() == expected {
-        Ok(())
+fn check_min_arity(function: &'static str, args: &[Expr], min: usize) -> Result<(), EvalError> {
+    if args.len() < min {
+        Err(arity_error(function, min, args.len()))
     } else {
-        Err(arity_error(function, expected, args.len()))
+        Ok(())
     }
 }
 
@@ -37,18 +37,9 @@ fn check_arity_range(
     min: usize,
     max: usize,
 ) -> Result<(), EvalError> {
-    if args.len() < min {
-        Err(arity_error(function, min, args.len()))
-    } else if args.len() > max {
+    check_min_arity(function, args, min)?;
+    if args.len() > max {
         Err(arity_error(function, max, args.len()))
-    } else {
-        Ok(())
-    }
-}
-
-fn check_min_arity(function: &'static str, args: &[Expr], min: usize) -> Result<(), EvalError> {
-    if args.len() < min {
-        Err(arity_error(function, min, args.len()))
     } else {
         Ok(())
     }
@@ -62,10 +53,6 @@ fn as_node_set<'a, N: Node<'a>>(
         Value::NodeSet(nodes) => Ok(nodes),
         _ => Err(EvalError::ExpectedNodeSet { context }),
     }
-}
-
-fn first_in_document_order<'a, N: Node<'a>>(nodes: &[N]) -> Option<N> {
-    nodes.iter().copied().min_by(|a, b| a.document_order(*b))
 }
 
 /// §4.1's shared "optional node-set argument" rule for `local-name()`/
@@ -321,7 +308,7 @@ pub(crate) fn dispatch<'ctx, 'hook, N: Node<'ctx>>(
                     .collect(),
                 other => whitespace_tokens(&other.to_xpath_string()),
             };
-            let root = crate::eval::root_of(ctx.node);
+            let root = crate::axes::root_of(ctx.node);
             let mut result: Vec<N> = tokens
                 .iter()
                 .filter_map(|id| find_element_by_id(root, id))

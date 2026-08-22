@@ -92,7 +92,7 @@ impl<'a, N: Node<'a>> Value<N> {
 /// The node in `nodes` that is first in document order, or `None` if empty.
 /// `nodes` is a node-set (unordered per the data model), so this must not
 /// assume `nodes[0]` is already the document-order-first node.
-fn first_in_document_order<'a, N: Node<'a>>(nodes: &[N]) -> Option<N> {
+pub(crate) fn first_in_document_order<'a, N: Node<'a>>(nodes: &[N]) -> Option<N> {
     nodes.iter().copied().min_by(|a, b| a.document_order(*b))
 }
 

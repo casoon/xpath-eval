@@ -1,5 +1,17 @@
 # xpath-eval
 
+> **Dieses Repository ist stillgelegt (24.09.2026).** Das Crate lebt weiter, aber
+> die Quelle ist jetzt das Monorepo
+> **[casoon/barrierlab](https://github.com/casoon/barrierlab)** — dort liegt es
+> unter `crates/xpath-eval/`, mit der vollständigen Historie dieses Repositorys, neben
+> `html-conform`, das es benutzt.
+>
+> - **crates.io bleibt unverändert.** Was danach erscheint, kommt aus barrierlab.
+> - **Änderungen und Fehler** gehören dorthin. Hier wird nichts mehr gebaut.
+> - Doku: <https://casoon.github.io/barrierlab/>
+>
+> Der Text unten beschreibt den Stand bei der Stilllegung.
+
 A pure-Rust implementation of [XPath 1.0](https://www.w3.org/TR/1999/REC-xpath-19991116/)
 — parses an XPath expression and evaluates it against a document.
 
